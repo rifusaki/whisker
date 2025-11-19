@@ -1,17 +1,5 @@
 import os
-import tempfile
-import subprocess
-import logging
-import whisper
 import dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-
-# === Configuration ===
-dotenv.load_dotenv()
-
-TELEGRAM_TOKEN = # tg_whisper_bot.py
-import os
 import tempfile
 import subprocess
 import logging
@@ -19,10 +7,10 @@ import whisper
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-# === Configuration ===
+# Configuration
+dotenv.load_dotenv()
 TELEGRAM_TOKEN = dotenv.get_key(dotenv.find_dotenv(), "TELEGRAM_TOKEN")
 MODEL_NAME = "small"   # small/medium/base/large — choose by accuracy/speed/size
-# ======================
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
