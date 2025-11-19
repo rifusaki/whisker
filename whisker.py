@@ -117,7 +117,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     # Handlers: voice notes, audio files, documents of type audio
-    voice_filter = filters.VOICE | filters.AUDIO | (filters.Document.MIME_TYPE("audio/ogg") | filters.Document.MIME_TYPE("audio/mpeg") | filters.Document.MIME_TYPE("audio/*"))
+    voice_filter = filters.VOICE | filters.AUDIO | (filters.Document.MimeType("audio/ogg") | filters.Document.MimeType("audio/mpeg") | filters.Document.MimeType("audio/*"))
     app.add_handler(MessageHandler(voice_filter, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
