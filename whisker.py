@@ -1,3 +1,4 @@
+import asyncio
 import os
 import dotenv
 import tempfile
@@ -56,13 +57,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Choose file: voice (voice note) takes precedence, else audio attachments
     file_obj = None
     if message.voice:
-        file_obj = message.voice.get_file()
+        file_obj = await message.voice.get_file()
         filename_hint = "voice.oga"
     elif message.audio:
-        file_obj = message.audio.get_file()
+        file_obj = await message.audio.get_file()
         filename_hint = message.audio.file_name or "audio"
     elif message.document and message.document.mime_type and message.document.mime_type.startswith("audio"):
-        file_obj = message.document.get_file()
+        file_obj = await message.document.get_file()
         filename_hint = message.document.file_name or "audio"
     else:
         await message.reply_text("I didn't find an audio attachment in that message. Send a voice note or audio file.")
@@ -89,7 +90,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Run whisper transcription
         try:
-            transcript = await context.application.run_in_executor(None, lambda: model.transcribe(wav_path).get("text", "").strip())
+            transcript = await asyncio.to_thread( lambda: model.transcribe(wav_path).get("text", "").strip())
             if not transcript:
                 transcript = "[No speech detected or transcription returned empty text]"
         except Exception as e:
