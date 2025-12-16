@@ -50,3 +50,6 @@ venv.bak/
 
 # MacOS shenanigans
 .DS_Store
+
+# models
+models/*.bin
