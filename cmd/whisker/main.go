@@ -14,8 +14,8 @@ func main() {
 	// Simple env loading
 	err := godotenv.Load()
 	if err != nil {
-    	log.Fatal("Error loading .env file")
-  	}
+		log.Fatal("Error loading .env file")
+	}
 
 	token := os.Getenv("TELEGRAM_TOKEN")
 	if token == "" {
@@ -23,7 +23,14 @@ func main() {
 	}
 
 	// initialize the audio Logic
-	as := audio.NewService("medium")
+	as, err := audio.NewService("models/ggml-medium.bin")
+	// as, err := audio.NewService("models/ggml-large-v3-turbo.bin")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		_ = as.Close()
+	}()
 
 	// initialize the Telegram Logic, inject the 'as' service into the handler
 	botHandler, err := telegram.NewHandler(token, as)
