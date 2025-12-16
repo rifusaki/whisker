@@ -42,11 +42,16 @@ func NewService(modelPath string) (*Service, error) {
 
 	// Try to initialize OpenVINO
 	// We pass empty strings to let whisper.cpp derive the paths and use default device
-	if err := ctx.InitOpenVINOEncoder("", "CPU", ""); err != nil {
-		timings.Printf("[audio] failed to init OpenVINO: %v", err)
-	} else {
-		timings.Printf("[audio] OpenVINO initialized")
-	}
+	// Optimization: Disabling OpenVINO to test raw AVX2 performance. Uncomment if configured correctly.
+	// if err := ctx.InitOpenVINOEncoder("", "CPU", ""); err != nil {
+	// 	timings.Printf("[audio] failed to init OpenVINO: %v", err)
+	// } else {
+	// 	timings.Printf("[audio] OpenVINO initialized")
+	// }
+
+	// Optimization: Set threads to physical core count (4 for i5-8250U) instead of logical (8)
+	// to avoid hyper-threading overhead.
+	ctx.SetThreads(4)
 
 	timings.Printf("[audio] context created in %s", time.Since(ctxStart).Truncate(time.Millisecond))
 

@@ -23,7 +23,7 @@ func main() {
 	}
 
 	// initialize the audio Logic
-	as, err := audio.NewService("models/ggml-medium.bin")
+	as, err := audio.NewService("models/ggml-medium-q5_0.bin")
 	// as, err := audio.NewService("models/ggml-large-v3-turbo.bin")
 	if err != nil {
 		log.Fatal(err)
