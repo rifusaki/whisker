@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"runtime"
@@ -169,6 +170,9 @@ func (s *Service) Transcribe(samples []float32) (string, error) {
 	}
 	s.ctx.SetAudioCtx(uint(audioCtx))
 	timings.Printf("[audio] audio_ctx=%d (clip=%dms)", audioCtx, durationMs)
+	if timings.DetailedEnabled() {
+		timings.Detailedf("[audio] transcribe start (samples=%d duration=%dms audio_ctx=%d lang=%s)", len(samples), durationMs, audioCtx, s.ctx.Language())
+	}
 
 	processStart := time.Now()
 	if err := s.ctx.Process(samples, nil, nil, nil); err != nil {
@@ -188,6 +192,7 @@ func (s *Service) Transcribe(samples []float32) (string, error) {
 	//     this, but TrimSpace may have left an empty segment that we skip)
 	//   - The final strings.Join produces exactly one space between segments
 	var parts []string
+	segmentIndex := 0
 	segmentsStart := time.Now()
 	for {
 		segment, err := s.ctx.NextSegment()
@@ -199,14 +204,81 @@ func (s *Service) Transcribe(samples []float32) (string, error) {
 		}
 
 		text := strings.TrimSpace(segment.Text)
-		if text == "" {
-			continue
+		if timings.DetailedEnabled() {
+			timings.Detailedf("[audio] segment=%d start=%s end=%s chars=%d tokens=%d text=%q", segmentIndex, segment.Start, segment.End, len(text), len(segment.Tokens), text)
+			if len(segment.Tokens) > 0 {
+				maxTokens := 48
+				if len(segment.Tokens) < maxTokens {
+					maxTokens = len(segment.Tokens)
+				}
+				var tokenB strings.Builder
+				for i := 0; i < maxTokens; i++ {
+					if i > 0 {
+						tokenB.WriteString(" | ")
+					}
+					tokenB.WriteString(fmt.Sprintf("%d:%q:%.3f", segment.Tokens[i].Id, segment.Tokens[i].Text, segment.Tokens[i].P))
+				}
+				timings.Detailedf("[audio] segment=%d tokens=%s", segmentIndex, tokenB.String())
+			}
 		}
-		parts = append(parts, text)
+
+		if text != "" {
+			parts = append(parts, text)
+		}
+		segmentIndex++
 	}
 	out := strings.Join(parts, " ")
 	timings.Printf("[audio] segment extraction in %s (segments=%d)", time.Since(segmentsStart).Truncate(time.Millisecond), len(parts))
+	if timings.DetailedEnabled() {
+		preview := out
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		preview = strings.ReplaceAll(preview, "\n", " ")
+		preview = strings.ReplaceAll(preview, "\r", " ")
+		preview = strings.Join(strings.Fields(preview), " ")
+		if preview == "" {
+			preview = "<empty>"
+		}
+		durationSec := float64(durationMs) / 1000
+		sampleSec := float64(len(samples)) / sampleRate
+		if durationSec <= 0 {
+			durationSec = sampleSec
+		}
+		if durationSec <= 0 {
+			durationSec = 1
+		}
+		rms := audioRMS(samples)
+		peak := audioPeak(samples)
+		timings.Detailedf("[audio] transcript preview=%q (len=%d segments=%d duration=%.2fs rms=%.4f peak=%.4f)", preview, len(out), len(parts), durationSec, rms, peak)
+	}
 	timings.Printf("[audio] transcribe total %s", time.Since(start).Truncate(time.Millisecond))
 
 	return out, nil
+}
+
+func audioRMS(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range samples {
+		fv := float64(v)
+		sum += fv * fv
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
+
+func audioPeak(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	max := 0.0
+	for _, v := range samples {
+		fv := math.Abs(float64(v))
+		if fv > max {
+			max = fv
+		}
+	}
+	return max
 }

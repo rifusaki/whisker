@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rifusaki/whisker/internal/audio"
@@ -101,6 +102,12 @@ func (h *Handler) Transcriber(c tele.Context, file *tele.File) error {
 	if err := h.Bot.Download(file, srcPath); err != nil {
 		return c.Send("Failed to download file.")
 	}
+	if timings.DetailedEnabled() {
+		info, err := os.Stat(srcPath)
+		if err == nil {
+			timings.Detailedf("%s download stats (path=%s size=%d bytes)", logPrefix, srcPath, info.Size())
+		}
+	}
 	timings.Printf("%s download finished in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
 	step = time.Now()
 
@@ -123,6 +130,19 @@ func (h *Handler) Transcriber(c tele.Context, file *tele.File) error {
 	}
 	timings.Printf("%s transcribe finished in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
 	step = time.Now()
+	if timings.DetailedEnabled() {
+		preview := text
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		preview = strings.ReplaceAll(preview, "\n", " ")
+		preview = strings.ReplaceAll(preview, "\r", " ")
+		preview = strings.Join(strings.Fields(preview), " ")
+		if preview == "" {
+			preview = "<empty>"
+		}
+		timings.Detailedf("%s transcript preview=%q (len=%d)", logPrefix, preview, len(text))
+	}
 
 	if text == "" {
 		timings.Printf("%s total time %s (no speech)", logPrefix, time.Since(start).Truncate(time.Millisecond))
