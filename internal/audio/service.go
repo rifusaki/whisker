@@ -76,11 +76,12 @@ func NewService(modelPath string) (*Service, error) {
 	timings.Printf("[audio] context created in %s", time.Since(ctxStart).Truncate(time.Millisecond))
 
 	langStart := time.Now()
-	if err := ctx.SetLanguage("es"); err != nil {
+	ctx.SetTranslate(false)
+	if err := ctx.SetLanguage("auto"); err != nil {
 		_ = model.Close()
 		return nil, fmt.Errorf("failed to set language: %w", err)
 	}
-	timings.Printf("[audio] language set in %s (lang=es)", time.Since(langStart).Truncate(time.Millisecond))
+	timings.Printf("[audio] decode config set in %s (task=transcribe lang=auto)", time.Since(langStart).Truncate(time.Millisecond))
 
 	return &Service{model: model, ctx: ctx}, nil
 }
