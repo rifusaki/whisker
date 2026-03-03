@@ -15,4 +15,4 @@ require (
 	github.com/go-audio/wav v1.1.0 // indirect
 )
 
-replace github.com/ggerganov/whisper.cpp/bindings/go => /home/rifubuntu/whisper.cpp/bindings/go
+replace github.com/ggerganov/whisper.cpp/bindings/go => /home/rifubuntu/whisker-proj/whisper.cpp/bindings/go

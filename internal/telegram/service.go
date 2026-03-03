@@ -104,13 +104,12 @@ func (h *Handler) Transcriber(c tele.Context, file *tele.File) error {
 	timings.Printf("%s download finished in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
 	step = time.Now()
 
-	// Convert
-	wavPath := filepath.Join(tmpDir, "converted.wav")
-	samples, err := h.AudioService.ConvertToWav(srcPath, wavPath)
+	// Decode: pipe raw f32le directly from ffmpeg — no intermediate WAV file
+	samples, err := h.AudioService.DecodeAudio(srcPath)
 	if err != nil {
-		return c.Send("Failed to convert audio: " + err.Error())
+		return c.Send("Failed to decode audio: " + err.Error())
 	}
-	timings.Printf("%s convert finished in %s (samples=%d)", logPrefix, time.Since(step).Truncate(time.Millisecond), len(samples))
+	timings.Printf("%s decode finished in %s (samples=%d)", logPrefix, time.Since(step).Truncate(time.Millisecond), len(samples))
 	step = time.Now()
 
 	c.Send("Transcribing now... (this might take a moment)")

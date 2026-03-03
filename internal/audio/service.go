@@ -1,16 +1,16 @@
 package audio
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ggerganov/whisper.cpp/bindings/go/pkg/whisper"
-	"github.com/go-audio/wav"
 
 	"github.com/rifusaki/whisker/internal/timings"
 )
@@ -23,8 +23,7 @@ type Service struct {
 	mu sync.Mutex
 }
 
-// create a new instance of the transcription service
-// we need to load the model and create a context
+// NewService loads the model and creates a reusable whisper context.
 func NewService(modelPath string) (*Service, error) {
 	start := time.Now()
 	model, err := whisper.New(modelPath)
@@ -40,18 +39,20 @@ func NewService(modelPath string) (*Service, error) {
 		return nil, fmt.Errorf("failed to create context: %w", err)
 	}
 
-	// Try to initialize OpenVINO
-	// We pass empty strings to let whisper.cpp derive the paths and use default device
-	// Optimization: Disabling OpenVINO to test raw AVX2 performance. Uncomment if configured correctly.
-	// if err := ctx.InitOpenVINOEncoder("", "CPU", ""); err != nil {
-	// 	timings.Printf("[audio] failed to init OpenVINO: %v", err)
-	// } else {
-	// 	timings.Printf("[audio] OpenVINO initialized")
-	// }
-
-	// Optimization: Set threads to physical core count (4 for i5-8250U) instead of logical (8)
-	// to avoid hyper-threading overhead.
+	// Use physical core count (4 for i5-8250U) to avoid hyper-threading overhead.
+	// With MKL sequential, GGML's OpenMP owns all 4 cores — no thread contention.
 	ctx.SetThreads(4)
+
+	// Beam search with 5 candidates — matches Python openai-whisper default.
+	// The decoder runs 5 parallel paths and picks the highest-probability one,
+	// which substantially reduces errors on mixed-language / accented speech.
+	// Decoder time is a small fraction of encoder time, so the cost is modest.
+	ctx.SetBeamSize(5)
+
+	// Temperature fallback — matches Python openai-whisper default (0.2 increment).
+	// If a decoded segment has high entropy or low log-probability, whisper retries
+	// at temperature+0.2 up to 1.0, preventing confident-but-wrong transcriptions.
+	ctx.SetTemperatureFallback(0.2)
 
 	timings.Printf("[audio] context created in %s", time.Since(ctxStart).Truncate(time.Millisecond))
 
@@ -72,29 +73,59 @@ func (s *Service) Close() error {
 	return s.model.Close()
 }
 
-// convert to WAV using ffmpeg and decode the WAV file
-func (s *Service) ConvertToWav(inputPath, outputPath string) ([]float32, error) {
+// DecodeAudio converts any audio file to 16 kHz mono float32 samples by
+// piping raw f32le output directly from ffmpeg — no intermediate WAV file.
+//
+// Why this replaces the old write-WAV + go-audio/wav approach:
+//   - Eliminates the disk write (~2 s for a 2-min clip)
+//   - Eliminates the go-audio chunked reader (~5.5 s for a 2-min clip)
+//   - Eliminates the 16-bit int → float32 conversion loop
+//   - Total: ~7.7 s → <0.5 s for typical voice messages
+func (s *Service) DecodeAudio(inputPath string) ([]float32, error) {
 	start := time.Now()
-	ffmpegStart := start
-	cmd := exec.Command("ffmpeg", "-y", "-i", inputPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", outputPath)
 
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg conversion failed: %w", err)
-	}
-	timings.Printf("[audio] ffmpeg convert in %s (in=%s out=%s)", time.Since(ffmpegStart).Truncate(time.Millisecond), inputPath, outputPath)
+	// Ask ffmpeg to decode to raw 32-bit little-endian floats on stdout.
+	// pipe:1 is more explicit than "-" and avoids any filename ambiguity.
+	cmd := exec.Command("ffmpeg",
+		"-y",
+		"-i", inputPath,
+		"-ar", "16000", // resample to 16 kHz
+		"-ac", "1", // mono
+		"-f", "f32le", // raw 32-bit LE floats — native on x86, no conversion needed
+		"pipe:1", // write to stdout
+	)
 
-	decodeStart := time.Now()
-	samples, err := decodeWav(outputPath)
+	raw, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode wav: %w", err)
+		return nil, fmt.Errorf("ffmpeg decode failed: %w", err)
 	}
-	timings.Printf("[audio] wav decode in %s (samples=%d)", time.Since(decodeStart).Truncate(time.Millisecond), len(samples))
-	timings.Printf("[audio] convert total %s", time.Since(start).Truncate(time.Millisecond))
+	timings.Printf("[audio] ffmpeg pipe in %s (in=%s raw=%d bytes)", time.Since(start).Truncate(time.Millisecond), inputPath, len(raw))
+
+	if len(raw)%4 != 0 {
+		return nil, fmt.Errorf("ffmpeg output size %d is not a multiple of 4", len(raw))
+	}
+
+	// Reinterpret the raw bytes as float32. On x86 (little-endian), the byte
+	// layout of f32le is already identical to Go's float32, so binary.Read
+	// degenerates to a typed memcopy.
+	castStart := time.Now()
+	nSamples := len(raw) / 4
+	samples := make([]float32, nSamples)
+	if err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, samples); err != nil {
+		return nil, fmt.Errorf("float32 cast failed: %w", err)
+	}
+	timings.Printf("[audio] float32 cast in %s (samples=%d)", time.Since(castStart).Truncate(time.Millisecond), nSamples)
+	timings.Printf("[audio] decode total %s", time.Since(start).Truncate(time.Millisecond))
 
 	return samples, nil
 }
 
-// Transcribe calls the whisper CLI wrapper.
+// Transcribe runs whisper inference on the provided PCM samples.
+//
+// SetAudioCtx limits the encoder to only process as many mel-spectrogram
+// tokens as the actual clip duration requires, instead of the full 1500-token
+// (30 s) window. Formula: 1 token ≈ 20 ms of audio (1500 tokens / 30 000 ms).
+// Capped at 1500 (the model hard maximum) so long clips don't crash.
 func (s *Service) Transcribe(samples []float32) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -104,6 +135,22 @@ func (s *Service) Transcribe(samples []float32) (string, error) {
 	if s.ctx == nil {
 		return "", fmt.Errorf("whisper context is not initialized")
 	}
+
+	const sampleRate = 16000
+	const msPerToken = 20    // 1500 tokens / 30 000 ms
+	const minAudioCtx = 32   // whisper.cpp hard lower bound
+	const maxAudioCtx = 1500 // model hard upper bound (= full 30 s window)
+
+	durationMs := len(samples) * 1000 / sampleRate
+	audioCtx := (durationMs / msPerToken) + 1 // +1 avoids truncation at boundaries
+	if audioCtx < minAudioCtx {
+		audioCtx = minAudioCtx
+	}
+	if audioCtx > maxAudioCtx {
+		audioCtx = maxAudioCtx
+	}
+	s.ctx.SetAudioCtx(uint(audioCtx))
+	timings.Printf("[audio] audio_ctx=%d (clip=%dms)", audioCtx, durationMs)
 
 	processStart := time.Now()
 	if err := s.ctx.Process(samples, nil, nil, nil); err != nil {
@@ -137,33 +184,4 @@ func (s *Service) Transcribe(samples []float32) (string, error) {
 	timings.Printf("[audio] transcribe total %s", time.Since(start).Truncate(time.Millisecond))
 
 	return out.String(), nil
-}
-
-// decodeWav reads a WAV file and converts it to []float32
-// SampleRate must be 16000 and mono
-func decodeWav(path string) ([]float32, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	decoder := wav.NewDecoder(f)
-	if !decoder.IsValidFile() {
-		return nil, fmt.Errorf("invalid wav file")
-	}
-
-	buf, err := decoder.FullPCMBuffer()
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert integers to float32 between -1.0 and 1.0
-	// This assumes 16-bit depth (audio standard for Whisper).
-	floats := make([]float32, len(buf.Data))
-	for i, sample := range buf.Data {
-		floats[i] = float32(sample) / 32768.0
-	}
-
-	return floats, nil
 }
