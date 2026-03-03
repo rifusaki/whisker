@@ -50,3 +50,11 @@ venv.bak/
 
 # MacOS shenanigans
 .DS_Store
+
+# models
+models/
+
+# build artifacts — never commit binaries
+whisker
+whisker_app
+*.code-workspace
