@@ -176,9 +176,19 @@ func (s *Service) Transcribe(samples []float32) (string, error) {
 	}
 	timings.Printf("[audio] whisper process in %s (samples=%d)", time.Since(processStart).Truncate(time.Millisecond), len(samples))
 
-	var out strings.Builder
+	// Collect all segment texts, then join into a single flowing paragraph.
+	//
+	// Whisper naturally produces short segments (a few words each). Emitting
+	// one newline per segment produces choppy, hard-to-read output. Instead we
+	// join with a single space and let the Telegram client handle line wrapping.
+	//
+	// Normalisation applied:
+	//   - TrimSpace each segment to remove leading/trailing whitespace
+	//   - Collapse any double-spaces left by joining (strings.Join already avoids
+	//     this, but TrimSpace may have left an empty segment that we skip)
+	//   - The final strings.Join produces exactly one space between segments
+	var parts []string
 	segmentsStart := time.Now()
-	segments := 0
 	for {
 		segment, err := s.ctx.NextSegment()
 		if err != nil {
@@ -192,14 +202,11 @@ func (s *Service) Transcribe(samples []float32) (string, error) {
 		if text == "" {
 			continue
 		}
-		if out.Len() > 0 {
-			out.WriteByte('\n')
-		}
-		out.WriteString(text)
-		segments++
+		parts = append(parts, text)
 	}
-	timings.Printf("[audio] segment extraction in %s (segments=%d)", time.Since(segmentsStart).Truncate(time.Millisecond), segments)
+	out := strings.Join(parts, " ")
+	timings.Printf("[audio] segment extraction in %s (segments=%d)", time.Since(segmentsStart).Truncate(time.Millisecond), len(parts))
 	timings.Printf("[audio] transcribe total %s", time.Since(start).Truncate(time.Millisecond))
 
-	return out.String(), nil
+	return out, nil
 }
