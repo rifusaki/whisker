@@ -1,6 +1,6 @@
 # Experiment Ledger
 
-Historical record of optimization experiments on i5-8250U (4 physical / 8 logical cores, ~35 GB/s LPDDR3, WSL2 Ubuntu 24.04).
+Historical record of optimization experiments on i5-8250U (4 physical / 8 logical cores, ~35 GB/s LPDDR3, WSL2 Ubuntu 24.04). This document is for AI usage.
 
 **Baseline:** Python `openai-whisper` ~2 min for 2-min audio (beam_size=5, FP16 large-v3-turbo).
 
@@ -110,3 +110,21 @@ Historical record of optimization experiments on i5-8250U (4 physical / 8 logica
 **OS:** WSL2 Ubuntu 24.04  
 **Inference bottleneck:** Memory bandwidth (not compute) — smaller models win  
 **HT impact:** Negative on encoder (bandwidth-bound), minimal on decoder
+
+---
+
+# Submodule Update Policy (Manual Pinning)
+
+`whisper.cpp` updates are manual and commit-pinned by this repository.
+
+```bash
+cd whisper.cpp
+git fetch origin
+git checkout <commit-or-tag>
+cd ..
+
+git add whisper.cpp
+git commit -m "update whisper.cpp pin"
+```
+
+No branch tracking is configured for automatic submodule updates.
