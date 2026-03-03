@@ -5,7 +5,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +42,24 @@ func NewService(modelPath string) (*Service, error) {
 		return nil, fmt.Errorf("failed to create context: %w", err)
 	}
 
-	// Use physical core count (4 for i5-8250U) to avoid hyper-threading overhead.
-	// With MKL sequential, GGML's OpenMP owns all 4 cores — no thread contention.
-	ctx.SetThreads(4)
+	// Thread count — tunable at runtime via WHISPER_THREADS env var.
+	//
+	// On the i5-8250U (4 physical / 8 logical cores, ~35 GB/s LPDDR3) the
+	// optimal value is unclear without measurement:
+	//   4 (physical) — avoids HT contention; each thread gets a full core
+	//   8 (logical)  — HT doubles throughput only if work is not memory-bound
+	//
+	// whisper.cpp encoder is memory-bandwidth-bound (large GEMM weight reads),
+	// so HT likely helps little. But decoder attention is more compute-bound,
+	// so the sweet spot may differ by model. Default = physical core count.
+	threads := runtime.NumCPU() / 2 // physical cores on typical HT machine
+	if v := os.Getenv("WHISPER_THREADS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			threads = n
+		}
+	}
+	ctx.SetThreads(uint(threads))
+	timings.Printf("[audio] threads=%d (set via WHISPER_THREADS or default physical cores)", threads)
 
 	// Beam search with 5 candidates — matches Python openai-whisper default.
 	// The decoder runs 5 parallel paths and picks the highest-probability one,

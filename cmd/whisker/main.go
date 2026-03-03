@@ -11,19 +11,6 @@ import (
 )
 
 func main() {
-	// Configure Intel MKL threading BEFORE any MKL initialisation.
-	//
-	// MKL_THREADING_LAYER=GNU: tells MKL to use libgomp (GNU OpenMP) as its
-	// thread scheduler instead of its own libiomp5. This makes MKL share the
-	// same thread pool as GGML's OpenMP layer, so all parallelism is
-	// coordinated through one scheduler — no double-scheduling contention.
-	//
-	// OMP_NUM_THREADS=4: caps both MKL and GGML OpenMP at the physical core
-	// count (i5-8250U has 4 physical / 8 logical). Beyond 4, hyperthreading
-	// overhead outweighs the gain for compute-bound inference workloads.
-	os.Setenv("MKL_THREADING_LAYER", "GNU")
-	os.Setenv("OMP_NUM_THREADS", "4")
-
 	// Simple env loading
 	err := godotenv.Load()
 	if err != nil {
@@ -36,12 +23,26 @@ func main() {
 	}
 
 	// Model selection (quality vs. size tradeoff):
-	//   F16  1.6 GB — reference quality (Python openai-whisper default)
-	//   Q5_0  548 MB — near-reference quality, ~66% less DRAM bandwidth ← active
-	//   Q4_K  453 MB — good quality, ~72% less DRAM bandwidth
-	// as, err := audio.NewService("models/ggml-large-v3-turbo.bin")      // F16  1.6 GB
-	as, err := audio.NewService("models/ggml-large-v3-turbo-q5_0.bin") // Q5_0  548 MB
-	// as, err := audio.NewService("models/ggml-large-v3-turbo-q4_k.bin") // Q4_K  453 MB
+	//
+	// large-v3-turbo variants (high quality, slower):
+	//   F16   1.6 GB — reference quality (Python openai-whisper default)
+	//   Q5_0   548 MB — near-reference quality
+	//   Q4_K   453 MB — good quality, ~72% less DRAM bandwidth
+	//
+	// medium variants (faster, ~40% smaller encoder — fewer layers, less DRAM):
+	//   F16   1.5 GB — reference quality
+	//   Q8_0   786 MB — near-lossless quantisation (~0.1% WER delta) ← active
+	//   Q5_0   515 MB — slight quality loss, max bandwidth savings
+	//
+	// Rule of thumb on i5-8250U: smaller model = faster, due to memory-bandwidth
+	// bottleneck (~35 GB/s LPDDR3). medium-q8_0 (786 MB) moves ~2x less data
+	// per forward pass than large-v3-turbo-q5_0 (548 MB) after counting the
+	// smaller encoder depth (24 vs 32 layers for medium vs large).
+	//
+	// as, err := audio.NewService("models/ggml-large-v3-turbo-q5_0.bin") // large Q5_0  548 MB
+	// as, err := audio.NewService("models/ggml-large-v3-turbo-q4_k.bin") // large Q4_K  453 MB
+	as, err := audio.NewService("models/ggml-medium-q8_0.bin") // medium Q8_0  786 MB ← active
+	// as, err := audio.NewService("models/ggml-medium-q5_0.bin") // medium Q5_0  515 MB
 	if err != nil {
 		log.Fatal(err)
 	}
