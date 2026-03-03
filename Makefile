@@ -8,7 +8,7 @@ GGML_BLAS_LIB_DIR := $(abspath $(WHISPER_ROOT)/build_go/ggml/src/ggml-blas)
 C_INCLUDE_PATH := $(abspath $(WHISPER_ROOT)/include):$(abspath $(WHISPER_ROOT)/ggml/include)
 LIBRARY_PATH   := $(WHISPER_LIB_DIR):$(GGML_LIB_DIR):$(GGML_BLAS_LIB_DIR):$(MKL_LIB)
 LD_LIBRARY_PATH := $(WHISPER_LIB_DIR):$(GGML_LIB_DIR):$(GGML_BLAS_LIB_DIR):$(MKL_LIB):$(LD_LIBRARY_PATH)
-CGO_LDFLAGS := -Wl,-rpath,$(WHISPER_LIB_DIR) -Wl,-rpath,$(GGML_LIB_DIR) -Wl,-rpath,$(GGML_BLAS_LIB_DIR)
+CGO_LDFLAGS := -Wl,-rpath,$$ORIGIN/whisper.cpp/build_go/src -Wl,-rpath,$$ORIGIN/whisper.cpp/build_go/ggml/src -Wl,-rpath,$$ORIGIN/whisper.cpp/build_go/ggml/src/ggml-blas
 
 export C_INCLUDE_PATH
 export LIBRARY_PATH
