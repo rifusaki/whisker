@@ -9,7 +9,7 @@ WHISPER_BUILD := $(WHISPER_ROOT)/build
 
 # Build the Go bot binary. No CGo required — plain go build.
 build:
-	go build -v -o /whisker ./cmd/whisker
+	go build -v -o ./whisker ./cmd/whisker
 
 # Build the bot and start it. whisper-server must already be running
 # (or WHISPER_SERVER_BIN must be set so the manager can launch it).
@@ -36,6 +36,7 @@ tidy:
 whisper-server:
 	cmake -B $(WHISPER_BUILD) \
 		-DGGML_BLAS=1 \
+		-DGGML_BLAS_VENDOR=OpenBLAS \
 		-DWHISPER_FFMPEG=1 \
 		-DBUILD_SHARED_LIBS=OFF \
 		$(WHISPER_ROOT)
@@ -50,6 +51,7 @@ whisper-server:
 whisper-server-openvino:
 	cmake -B $(WHISPER_BUILD)-ov \
 		-DGGML_BLAS=1 \
+		-DGGML_BLAS_VENDOR=OpenBLAS \
 		-DWHISPER_FFMPEG=1 \
 		-DWHISPER_OPENVINO=1 \
 		-DBUILD_SHARED_LIBS=OFF \
