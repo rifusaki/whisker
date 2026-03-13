@@ -7,14 +7,22 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/rifusaki/whisker/internal/audio"
+	"github.com/rifusaki/whisker/internal/queue"
+	"github.com/rifusaki/whisker/internal/server"
 	"github.com/rifusaki/whisker/internal/telegram"
+	"github.com/rifusaki/whisker/internal/timings"
 )
 
 func main() {
-	// Simple env loading
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
+	// Load .env if present. Unlike the previous godotenv.Load(), this uses
+	// Overload so that environment variables already set in the shell take
+	// precedence over the file, and the absence of a .env file is a warning
+	// rather than a fatal error (allowing purely env-var driven deployments).
+	if err := godotenv.Overload(); err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("warning: could not load .env file: %v", err)
+		}
+		// No .env is fine — fall through to reading env vars directly.
 	}
 
 	token := os.Getenv("TELEGRAM_TOKEN")
@@ -22,38 +30,39 @@ func main() {
 		log.Fatal("TELEGRAM_TOKEN is not set")
 	}
 
-	// Model selection (quality vs. size tradeoff):
-	//
-	// large-v3-turbo variants (high quality, slower):
-	//   F16   1.6 GB — reference quality (Python openai-whisper default)
-	//   Q5_0   548 MB — near-reference quality
-	//   Q4_K   453 MB — good quality, ~72% less DRAM bandwidth
-	//
-	// medium variants (faster, ~40% smaller encoder — fewer layers, less DRAM):
-	//   F16   1.5 GB — reference quality
-	//   Q8_0   786 MB — near-lossless quantisation (~0.1% WER delta) ← active
-	//   Q5_0   515 MB — slight quality loss, max bandwidth savings
-	//
-	// Rule of thumb on i5-8250U: smaller model = faster, due to memory-bandwidth
-	// bottleneck (~35 GB/s LPDDR3). medium-q8_0 (786 MB) moves ~2x less data
-	// per forward pass than large-v3-turbo-q5_0 (548 MB) after counting the
-	// smaller encoder depth (24 vs 32 layers for medium vs large).
-	//
-	// as, err := audio.NewService("models/ggml-large-v3-turbo-q5_0.bin") // large Q5_0  548 MB
-	// as, err := audio.NewService("models/ggml-large-v3-turbo-q4_k.bin") // large Q4_K  453 MB
-	as, err := audio.NewService("models/ggml-medium-q8_0.bin") // medium Q8_0  786 MB ← active
-	// as, err := audio.NewService("models/ggml-medium-q5_0.bin") // medium Q5_0  515 MB
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() {
-		_ = as.Close()
-	}()
+	// Build whisper-server config from env vars.
+	cfg := server.ConfigFromEnv()
+	timings.Printf("[main] whisper-server config: bin=%s model=%s threads=%d beam=%d vad=%v flash=%v",
+		cfg.BinPath, cfg.ModelPath, cfg.Threads, cfg.BeamSize, cfg.VAD, cfg.FlashAttn)
 
-	// initialize the Telegram Logic, inject the 'as' service into the handler
-	botHandler, err := telegram.NewHandler(token, as)
+	// Start (and supervise) the whisper-server child process.
+	// This blocks until the server has loaded the model and is accepting
+	// requests, which can take 10-30 s on the i5-8250U.
+	mgr, err := server.Start(cfg)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to start whisper-server: %v", err)
+	}
+	defer mgr.Stop()
+	log.Printf("[main] whisper-server ready at %s", mgr.URL())
+
+	// Create the HTTP client used to submit inference requests.
+	client := audio.NewClient(mgr.URL())
+
+	// Create the transcription queue. The worker calls client.Transcribe and
+	// writes the result back to the job's Result channel.
+	//
+	// Backlog of 16 means up to 16 jobs can be enqueued without the Telegram
+	// handler blocking. In practice this bot is single-user, so the queue
+	// depth will rarely exceed 1.
+	q := queue.New(16, func(j *queue.Job) {
+		text, err := client.Transcribe(j.AudioPath)
+		j.Result <- queue.JobResult{Text: text, Err: err}
+	})
+
+	// Initialise the Telegram bot and start polling.
+	botHandler, err := telegram.NewHandler(token, client, q)
+	if err != nil {
+		log.Fatalf("failed to create Telegram handler: %v", err)
 	}
 
 	botHandler.Start()

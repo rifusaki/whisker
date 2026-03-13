@@ -55,6 +55,7 @@ venv.bak/
 models/
 
 # build artifacts — never commit binaries
-whisker
-whisker_app
+/whisker
+/whisker_app
 *.code-workspace
+bin/
