@@ -8,18 +8,20 @@ import (
 	"time"
 
 	"github.com/rifusaki/whisker/internal/audio"
+	"github.com/rifusaki/whisker/internal/queue"
 	"github.com/rifusaki/whisker/internal/timings"
 	tele "gopkg.in/telebot.v3"
 )
 
-// Handler holds the dependencies for the bot
+// Handler holds the dependencies for the bot.
 type Handler struct {
-	Bot          *tele.Bot
-	AudioService *audio.Service
+	Bot    *tele.Bot
+	client *audio.Client
+	queue  *queue.Queue
 }
 
 // NewHandler initializes the bot and registers routes.
-func NewHandler(token string, as *audio.Service) (*Handler, error) {
+func NewHandler(token string, client *audio.Client, q *queue.Queue) (*Handler, error) {
 	pref := tele.Settings{
 		Token:  token,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
@@ -31,11 +33,11 @@ func NewHandler(token string, as *audio.Service) (*Handler, error) {
 	}
 
 	h := &Handler{
-		Bot:          b,
-		AudioService: as,
+		Bot:    b,
+		client: client,
+		queue:  q,
 	}
 
-	// Register the handler for voice notes and audio files
 	b.Handle(tele.OnVoice, h.handleVoice)
 	b.Handle(tele.OnAudio, h.handleAudio)
 
@@ -48,30 +50,28 @@ func (h *Handler) Start() {
 }
 
 func (h *Handler) handleVoice(c tele.Context) error {
-	// get the voice file object from the message
 	voice := c.Message().Voice
 	if voice == nil {
 		return c.Send("No voice file found in the message.")
 	}
-
-	// actually transcribe
 	h.Transcriber(c, &voice.File)
 	return nil
 }
 
 func (h *Handler) handleAudio(c tele.Context) error {
-	// get the audio file object from the message
 	audio := c.Message().Audio
 	if audio == nil {
 		return c.Send("No audio file found in the message.")
 	}
-
-	// actually transcribe
 	h.Transcriber(c, &audio.File)
 	return nil
 }
 
-// Transcriber handles the transcription process
+// Transcriber handles the full lifecycle of a transcription request:
+//  1. Download the Telegram file to a temp path
+//  2. Submit the job to the queue (notifying the user of their position)
+//  3. Block until the queue worker delivers the transcript
+//  4. Reply with the result or an error message
 func (h *Handler) Transcriber(c tele.Context, file *tele.File) error {
 	msg := c.Message()
 	msgID := 0
@@ -88,48 +88,51 @@ func (h *Handler) Transcriber(c tele.Context, file *tele.File) error {
 	logPrefix := fmt.Sprintf("[telegram chat=%d msg=%d]", chatID, msgID)
 	timings.Printf("%s transcription start", logPrefix)
 
-	// Create a temp directory
-	tmpDir, err := os.MkdirTemp("", "downloads")
+	// Create a temp directory for the downloaded audio.
+	tmpDir, err := os.MkdirTemp("", "whisker-*")
 	if err != nil {
-		return c.Send("Internal error creating temp dir")
+		return c.Send("Internal error creating temp dir.")
 	}
-	defer os.RemoveAll(tmpDir) // Clean up on exit
+	defer os.RemoveAll(tmpDir)
 	timings.Printf("%s tempdir created in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
 	step = time.Now()
 
-	// Download file from Telegram
+	// Download the audio file from Telegram.
 	srcPath := filepath.Join(tmpDir, "input_audio")
 	if err := h.Bot.Download(file, srcPath); err != nil {
 		return c.Send("Failed to download file.")
 	}
 	if timings.DetailedEnabled() {
-		info, err := os.Stat(srcPath)
-		if err == nil {
+		if info, err := os.Stat(srcPath); err == nil {
 			timings.Detailedf("%s download stats (path=%s size=%d bytes)", logPrefix, srcPath, info.Size())
 		}
 	}
 	timings.Printf("%s download finished in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
 	step = time.Now()
 
-	// Decode: pipe raw f32le directly from ffmpeg — no intermediate WAV file
-	samples, err := h.AudioService.DecodeAudio(srcPath)
-	if err != nil {
-		return c.Send("Failed to decode audio: " + err.Error())
+	// Submit to the queue. The returned position tells us how many jobs are
+	// ahead of this one so we can give an accurate status reply.
+	job := &queue.Job{
+		AudioPath: srcPath,
+		Result:    make(chan queue.JobResult, 1),
 	}
-	timings.Printf("%s decode finished in %s (samples=%d)", logPrefix, time.Since(step).Truncate(time.Millisecond), len(samples))
+	pos := h.queue.Submit(job)
+	timings.Printf("%s queued (position=%d) in %s", logPrefix, pos, time.Since(step).Truncate(time.Millisecond))
+
+	// Notify the user now — before blocking on the result — so they know the
+	// bot received their message even if they have to wait.
+	c.Send(queue.PositionMessage(pos)) //nolint:errcheck — best-effort notice
+
+	// Block until the worker finishes this job.
+	result := <-job.Result
+	timings.Printf("%s transcription finished in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
 	step = time.Now()
 
-	c.Send("Transcribing now... (this might take a moment)")
-	timings.Printf("%s notice sent in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
-	step = time.Now()
-
-	// Transcribe
-	text, err := h.AudioService.Transcribe(samples)
-	if err != nil {
-		return c.Send("Transcription failed: " + err.Error())
+	if result.Err != nil {
+		return c.Send("Transcription failed: " + result.Err.Error())
 	}
-	timings.Printf("%s transcribe finished in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
-	step = time.Now()
+
+	text := result.Text
 	if timings.DetailedEnabled() {
 		preview := text
 		if len(preview) > 200 {
@@ -149,7 +152,6 @@ func (h *Handler) Transcriber(c tele.Context, file *tele.File) error {
 		return c.Send("[No speech detected]")
 	}
 
-	// Basic reply
 	err = c.Send(fmt.Sprintf("Transcript:\n\n%s", text))
 	timings.Printf("%s reply sent in %s", logPrefix, time.Since(step).Truncate(time.Millisecond))
 	timings.Printf("%s total time %s", logPrefix, time.Since(start).Truncate(time.Millisecond))
