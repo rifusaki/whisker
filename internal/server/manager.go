@@ -125,7 +125,7 @@ func (m *Manager) URL() string {
 }
 
 // startOnce launches one whisper-server process and blocks until it responds
-// on /inference (or a timeout expires).
+// on /inference (or the process exits early, or a timeout expires).
 func (m *Manager) startOnce() error {
 	args := m.buildArgs()
 	log.Printf("[server] starting whisper-server: %s %s", m.cfg.BinPath, strings.Join(args, " "))
@@ -138,22 +138,28 @@ func (m *Manager) startOnce() error {
 		return fmt.Errorf("failed to start whisper-server: %w", err)
 	}
 
+	// exited is closed as soon as the process terminates (for any reason).
+	// waitReady selects on this channel so it can fail fast instead of
+	// polling for the full timeout when e.g. the model file is missing.
+	exited := make(chan struct{})
+	go func() {
+		cmd.Wait() //nolint:errcheck — we only care about the signal, not the error here
+		close(exited)
+	}()
+
 	// Poll until the server accepts connections.  whisper-server loads the
 	// model at startup which takes several seconds on the target hardware.
-	if err := m.waitReady(60 * time.Second); err != nil {
+	if err := m.waitReady(60*time.Second, exited); err != nil {
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("whisper-server did not become ready: %w", err)
 	}
 	log.Printf("[server] whisper-server ready at %s", m.URL())
 
-	// Hand the process off to the supervisor goroutine.
+	// Watch for unexpected exit and log it (context-cancelled exit is normal).
 	go func() {
-		if err := cmd.Wait(); err != nil {
-			// Non-zero exit is expected when the context is cancelled (normal
-			// shutdown); suppress the noise in that case.
-			if m.ctx.Err() == nil {
-				log.Printf("[server] whisper-server exited unexpectedly: %v", err)
-			}
+		<-exited
+		if m.ctx.Err() == nil {
+			log.Printf("[server] whisper-server exited unexpectedly")
 		}
 	}()
 
@@ -189,14 +195,24 @@ func (m *Manager) supervise() {
 	}
 }
 
-// waitReady polls GET /inference until a non-5xx response or timeout.
-// whisper-server returns 400 for a GET (expects POST with a file) which is
+// waitReady polls GET /inference until a non-5xx response, the process exits,
+// or the timeout expires — whichever comes first.
+// whisper-server returns 400 for a plain GET (expects POST + file), which is
 // fine — it means the server is up and listening.
-func (m *Manager) waitReady(timeout time.Duration) error {
+func (m *Manager) waitReady(timeout time.Duration, exited <-chan struct{}) error {
 	deadline := time.Now().Add(timeout)
 	url := m.URL() + "/inference"
+	client := &http.Client{Timeout: 2 * time.Second}
+
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(url) //nolint:noctx
+		// Fail fast if the process already died.
+		select {
+		case <-exited:
+			return fmt.Errorf("process exited before becoming ready (check model path and server logs above)")
+		default:
+		}
+
+		resp, err := client.Get(url) //nolint:noctx
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode < 500 {
