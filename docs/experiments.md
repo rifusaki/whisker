@@ -95,11 +95,42 @@ Historical record of optimization experiments on i5-8250U (4 physical / 8 logica
 
 ## Future Experiment Ideas
 
-- **Flash attention:** `--flash-attn` flag in whisper.cpp (decoder speedup)
+- **Flash attention:** `WHISPER_FLASH_ATTN=true` — now wired in; needs a benchmark run
 - **medium-q5_0:** Test 515 MB model if quality delta is acceptable (30% less bandwidth than q8_0)
-- **Distil-whisper:** Smaller distilled models (experimental upstream branch)
-- **VAD preprocessing:** Voice activity detection to skip silence before inference
+- **VAD:** `WHISPER_VAD=true` — now wired in; needs a benchmark run with real voice notes
+- **OpenVINO encoder:** `make whisper-server-openvino` offloads encoder to Intel HD 620 iGPU; requires OpenVINO toolkit installation
+- **Distil-whisper:** English-only; not viable while bot handles Spanish audio
 - **Streaming:** Incremental transcription for long audio (>5 min)
+
+---
+
+---
+
+## 2026-03-13: Architecture — whisper-server + HTTP (v2) ✅ **CURRENT**
+
+**Branch:** `refactor/whisper-server-http`
+
+**Change:** Replaced CGo in-process whisper.cpp bindings with the upstream
+`whisper-server` binary managed as a child process. The Go bot communicates
+via `POST /inference` multipart HTTP.
+
+**Motivation:**
+- CGo required cmake + OpenBLAS + custom submodule branches; `go build` now
+  needs only the Go toolchain
+- Process isolation: a whisper crash/panic can no longer kill the bot
+- All inference options (model, threads, VAD, flash-attn) configurable at
+  runtime via env vars without recompiling Go
+- Queue with position-aware user feedback replaces the silent mutex
+
+**New knobs (all env vars, see example.env):**
+- `WHISPER_FLASH_ATTN` — `--flash-attn` passed to server
+- `WHISPER_VAD` / `WHISPER_VAD_MODEL` — Silero VAD silence stripping
+- `WHISPER_TIMEOUT_SECS` — per-request HTTP deadline (default 600 s)
+
+**Speed impact:** Loopback HTTP overhead is <1 ms — negligible against
+3+ min inference times. Net change vs. CGo baseline: 0 ms.
+
+**Pending benchmarks:** flash-attn, VAD, medium-q5_0, OpenVINO encoder.
 
 ---
 
