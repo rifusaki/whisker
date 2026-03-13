@@ -8,6 +8,7 @@ import (
 // Job represents a single transcription request.
 type Job struct {
 	AudioPath string        // path to the temp audio file
+	Language  string        // whisper language code ("auto", "es", "en", …)
 	Result    chan JobResult // buffered channel (cap 1) for the response
 }
 

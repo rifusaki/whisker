@@ -31,9 +31,6 @@ import (
 )
 
 const (
-	// sampleRate is the sample rate whisper expects (16 kHz).
-	sampleRate = 16000
-
 	// msPerToken is the mel-spectrogram resolution (1 token ≈ 20 ms).
 	msPerToken = 20
 
@@ -41,9 +38,10 @@ const (
 	minAudioCtx = 32
 	maxAudioCtx = 1500
 
-	// defaultTimeout is the per-request HTTP timeout for Transcribe calls.
-	// Long clips on the i5-8250U can take 3-4 min; 10 min is a safe ceiling.
-	defaultTimeoutSecs = 600
+	// defaultTimeoutSecs is the per-request deadline for Transcribe calls.
+	// Long clips on the i5-8250U can take several minutes; 20 min is a safe
+	// ceiling for even the longest voice notes.
+	defaultTimeoutSecs = 1200
 )
 
 // inferenceResponse is the JSON shape returned by whisper-server /inference.
@@ -56,6 +54,9 @@ type inferenceResponse struct {
 // inference (or the Queue does so before the Client is reached).
 type Client struct {
 	serverURL  string
+	timeoutSec int
+	// httpClient has no Timeout set — deadline is managed per-request via
+	// context so the timeout value is readable in error messages.
 	httpClient *http.Client
 }
 
@@ -69,32 +70,35 @@ func NewClient(serverURL string) *Client {
 		}
 	}
 	return &Client{
-		serverURL: serverURL,
-		httpClient: &http.Client{
-			Timeout: time.Duration(timeout) * time.Second,
-		},
+		serverURL:  serverURL,
+		timeoutSec: timeout,
+		// No client-level Timeout: we set it per-request via context so the
+		// deadline can be sized to the clip duration in the future.
+		httpClient: &http.Client{},
 	}
 }
 
 // Transcribe sends the audio file at audioPath to whisper-server and returns
-// the transcript. It computes audio_ctx from the clip duration via ffprobe so
-// the server only processes as many mel tokens as the clip actually needs,
-// matching the optimisation we had in the old CGo implementation.
-func (c *Client) Transcribe(audioPath string) (string, error) {
+// the transcript. lang overrides the server's default language ("auto" = detect).
+// It computes audio_ctx from the clip duration via ffprobe so the server only
+// processes as many mel tokens as the clip actually needs.
+func (c *Client) Transcribe(audioPath, lang string) (string, error) {
 	start := time.Now()
 
 	// Probe duration to compute audio_ctx.
 	audioCtx, durationMs := probeAudioCtx(audioPath)
-	timings.Printf("[audio] audio_ctx=%d (clip=%dms path=%s)", audioCtx, durationMs, audioPath)
+	timings.Printf("[audio] audio_ctx=%d (clip=%dms lang=%s path=%s)", audioCtx, durationMs, lang, audioPath)
 
 	// Build multipart request body.
-	body, contentType, err := buildMultipart(audioPath, audioCtx)
+	body, contentType, err := buildMultipart(audioPath, audioCtx, lang)
 	if err != nil {
 		return "", fmt.Errorf("building multipart: %w", err)
 	}
 
 	url := c.serverURL + "/inference"
-	ctx, cancel := context.WithTimeout(context.Background(), c.httpClient.Timeout)
+	// Per-request deadline via context — http.Client has no Timeout so this
+	// value actually appears in timeout error messages.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.timeoutSec)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
@@ -150,14 +154,21 @@ func (c *Client) Transcribe(audioPath string) (string, error) {
 }
 
 // buildMultipart constructs the multipart/form-data body expected by
-// whisper-server /inference. Required fields:
+// whisper-server /inference.
 //
-//	file          — the audio file (any format; server uses ffmpeg via --convert)
-//	temperature   — 0.0 (let temperature_inc handle fallback)
-//	temperature_inc — 0.2 (matches Python openai-whisper default)
-//	response_format — "json"
-//	audio_ctx     — computed from clip duration
-func buildMultipart(audioPath string, audioCtx int) (*bytes.Buffer, string, error) {
+// Anti-hallucination parameters (fixes looping repetition on short audio):
+//
+//	entropy_thold  — abort a segment if token entropy exceeds this value.
+//	                 whisper.cpp default is 2.4; we tighten to 2.1 to catch
+//	                 runaway loops earlier.
+//	logprob_thold  — abort if mean log-probability drops below this value.
+//	                 -0.6 is tighter than the default -1.0.
+//	no_context     — do not carry text context from the previous segment into
+//	                 the next; prevents loops from self-reinforcing across
+//	                 chunk boundaries on short clips.
+//	suppress_nst   — suppress non-speech tokens (music notes, [BLANK_AUDIO],
+//	                 etc.) which are common triggers for repetition loops.
+func buildMultipart(audioPath string, audioCtx int, lang string) (*bytes.Buffer, string, error) {
 	f, err := os.Open(audioPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("opening audio file: %w", err)
@@ -176,12 +187,22 @@ func buildMultipart(audioPath string, audioCtx int) (*bytes.Buffer, string, erro
 		return nil, "", fmt.Errorf("copying audio data: %w", err)
 	}
 
-	// Inference parameters.
+	if lang == "" {
+		lang = "auto"
+	}
+
 	fields := map[string]string{
+		"response_format": "json",
+		"language":        lang,
+		"audio_ctx":       strconv.Itoa(audioCtx),
+		// Decoding parameters
 		"temperature":     "0.0",
 		"temperature_inc": "0.2",
-		"response_format": "json",
-		"audio_ctx":       strconv.Itoa(audioCtx),
+		// Anti-hallucination / loop prevention
+		"entropy_thold": "2.1",
+		"logprob_thold": "-0.6",
+		"no_context":    "true",
+		"suppress_nst":  "true",
 	}
 	for k, v := range fields {
 		if err := w.WriteField(k, v); err != nil {

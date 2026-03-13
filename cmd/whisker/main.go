@@ -55,7 +55,7 @@ func main() {
 	// handler blocking. In practice this bot is single-user, so the queue
 	// depth will rarely exceed 1.
 	q := queue.New(16, func(j *queue.Job) {
-		text, err := client.Transcribe(j.AudioPath)
+		text, err := client.Transcribe(j.AudioPath, j.Language)
 		j.Result <- queue.JobResult{Text: text, Err: err}
 	})
 
