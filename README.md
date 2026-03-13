@@ -65,9 +65,9 @@ model options (all in `models/`):
 
 | file | size | notes |
 |---|---|---|
-| `ggml-medium-q8_0.bin` | 786 MB | current default — near-lossless |
-| `ggml-medium-q5_0.bin` | 515 MB | ~30% less bandwidth, slight quality loss (untested) |
-| `ggml-large-v3-turbo-q4_k.bin` | 453 MB | higher quality, slower |
+| `ggml-large-v3-turbo-q5_0.bin` | 574 MB | **default** — near large-v3 quality, ~medium speed |
+| `ggml-medium-q8_0.bin` | 786 MB | medium, near-lossless Q8 |
+| `ggml-medium-q5_0.bin` | 515 MB | medium, smallest/fastest |
 
 ### configure
 
@@ -88,7 +88,19 @@ go run ./cmd/whisker
 
 on startup the manager loads the model (~10-30 s on i5-8250U) before the bot starts polling.
 
-diagnostics:
+### language selection
+
+send any whisper language code or English name as a plain text message to pin the transcription language for that chat:
+
+```
+es          → pin to Spanish
+english     → pin to English
+auto        → reset to automatic detection (default)
+```
+
+all 99 whisper language codes are accepted. the preference is stored in-memory and resets on restart.
+
+### diagnostics
 
 ```bash
 WHISKER_TIMINGS=true go run ./cmd/whisker

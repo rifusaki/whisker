@@ -52,7 +52,7 @@ func ConfigFromEnv() Config {
 		BinPath:      envOr("WHISPER_SERVER_BIN", "./bin/whisper-server"),
 		Host:         envOr("WHISPER_SERVER_HOST", "127.0.0.1"),
 		Port:         envOr("WHISPER_SERVER_PORT", "8080"),
-		ModelPath:    envOr("WHISPER_MODEL", "models/ggml-medium-q8_0.bin"),
+		ModelPath:    envOr("WHISPER_MODEL", "models/ggml-large-v3-turbo-q5_0.bin"),
 		Language:     envOr("WHISPER_LANGUAGE", "auto"),
 		VADModelPath: envOr("WHISPER_VAD_MODEL", "models/ggml-silero-v6.2.0.bin"),
 	}
