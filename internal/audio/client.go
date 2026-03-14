@@ -41,7 +41,7 @@ const (
 	// defaultTimeoutSecs is the per-request deadline for Transcribe calls.
 	// Long clips on the i5-8250U can take several minutes; 20 min is a safe
 	// ceiling for even the longest voice notes.
-	defaultTimeoutSecs = 1200
+	defaultTimeoutSecs = 2400
 )
 
 // inferenceResponse is the JSON shape returned by whisper-server /inference.

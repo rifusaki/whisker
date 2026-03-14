@@ -2,7 +2,7 @@
 
 simple Telegram bot to transcribe voice notes and audio using `whisper.cpp`. I am not particularly fond of voice notes.
 
-the bot runs `whisper-server` as a managed child process and talks to it over HTTP — no CGo, no shared libraries, plain `go build`.
+the bot runs `whisper-server` as a managed child process and talks to it over HTTP.
 
 ## layout
 
@@ -13,7 +13,7 @@ whisker/
 ├── bin/                # compiled whisper-server binary (gitignored)
 ├── cmd/whisker/        # app entrypoint
 └── internal/
-    ├── audio/          # HTTP client → whisper-server /inference
+    ├── audio/          # HTTP client: whisper-server /inference
     ├── queue/          # serialises jobs, sends position notice to user
     ├── server/         # starts/supervises whisper-server child process
     ├── telegram/       # bot handlers
@@ -25,8 +25,6 @@ whisker/
 ```bash
 pacman -Sy go cmake make gcc openblas ffmpeg
 ```
-
-anything else you might be missing: `git`, `pkg-config` (pulled in by ffmpeg deps).
 
 ## first-time setup
 
@@ -105,6 +103,7 @@ all 99 whisper language codes are accepted. the preference is stored in-memory a
 ```bash
 WHISKER_TIMINGS=true go run ./cmd/whisker
 DETAILED_TRANSCRIPTION_LOGGING=true go run ./cmd/whisker
+WHISPER_SERVER_PORT=8181 go run ./cmd/whisker
 ```
 
 ## submodule pinning
