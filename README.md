@@ -1,83 +1,113 @@
 # whisker
 
-simple Telegram bot to transcribe voice notes and audios using `whisper.cpp` (Go bindings). I am not particularly fond of voice notes.
+simple Telegram bot to transcribe voice notes and audio using `whisper.cpp`. I am not particularly fond of voice notes.
+
+the bot runs `whisper-server` as a managed child process and talks to it over HTTP.
 
 ## layout
 
 ```
 whisker/
-├── whisper.cpp/   # git submodule (manual commit pin)
-├── models/        # downloaded GGML model files
-├── cmd/whisker/   # app entrypoint
-└── internal/      # bot + audio services
+├── whisper.cpp/        # git submodule (manual commit pin)
+├── models/             # downloaded GGML model files
+├── bin/                # compiled whisper-server binary (gitignored)
+├── cmd/whisker/        # app entrypoint
+└── internal/
+    ├── audio/          # HTTP client: whisper-server /inference
+    ├── queue/          # serialises jobs, sends position notice to user
+    ├── server/         # starts/supervises whisper-server child process
+    ├── telegram/       # bot handlers
+    └── timings/        # optional structured timing logs
 ```
 
-## prerequisites
+## prerequisites (Arch Linux)
 
-- Go 1.21+ (for building `whisker`)
-- CMake + C/C++ toolchain (for building `whisper.cpp`)
-- BLAS backend available (OpenBLAS or MKL)
-- `ffmpeg` (for audio conversion)
-- Telegram Bot Token
+```bash
+pacman -Sy go cmake make gcc openblas ffmpeg
+```
 
-
-## how to
+## first-time setup
 
 ```bash
 git clone --recurse-submodules https://github.com/rifusaki/whisker.git
 cd whisker
 ```
 
-or if you already cloned without submodules:
+already cloned without submodules?
 
 ```bash
 git submodule update --init --recursive
 ```
 
-### set env vars
-right now only `TELEGRAM_TOKEN` is needed.
-
-### build whisper.cpp
-currently the pinned `whisper.cpp` make is highly optimized for my very specific machine (HP Pavilion 360 with an i5-8250U) because this whole thing runs from that old laptop in my room
+### build whisper-server
 
 ```bash
-cd whisper.cpp
-cmake -B build_go \
-  -DWHISPER_BUILD_EXAMPLES=OFF \
-  -DWHISPER_BUILD_TESTS=OFF \
-  -DGGML_BLAS=ON \
-  -DGGML_NATIVE=ON
-cmake --build build_go --config Release
-cd ..
+make whisper-server   # → bin/whisper-server (~3 MB static binary)
 ```
 
-### get models
-these are stored in `models/` at the repository root. default is `models/ggml-medium-q8_0.bin` because computing power shenanigans. 
+this builds with OpenBLAS (GEMM speedup) and ffmpeg (any audio format via `--convert`). takes ~2 min on the i5-8250U.
+
+optional — download the Silero VAD model for silence stripping:
 
 ```bash
-./scripts/download-models.sh
+make vad-model        # → models/ggml-silero-v6.2.0.bin (~864 KB)
 ```
 
-however, in the process we got a more complete list:
-- `ggml-medium-q8_0.bin` - current production (786 MB, near-lossless)
-- `ggml-medium-q5_0.bin` - smaller fallback (515 MB)
-- `ggml-large-v3-turbo-q4_k.bin` - higher quality fallback (453 MB, slower)
-
-### build and run
+### get a Whisper model
 
 ```bash
-make build
-./whisker
+bash scripts/download-models.sh
 ```
 
-for diagnostics set `DETAILED_TRANSCRIPTION_LOGGING=1` and/or `WHISKER_TIMINGS=1` on `.env`. or, well, just at runtime:
+model options (all in `models/`):
+
+| file | size | notes |
+|---|---|---|
+| `ggml-large-v3-turbo-q5_0.bin` | 574 MB | **default** — near large-v3 quality, ~medium speed |
+| `ggml-medium-q8_0.bin` | 786 MB | medium, near-lossless Q8 |
+| `ggml-medium-q5_0.bin` | 515 MB | medium, smallest/fastest |
+
+### configure
 
 ```bash
-WHISKER_TIMINGS=1  ./whisker
+cp example.env .env
+# edit .env — at minimum set TELEGRAM_TOKEN
+# optionally enable: WHISPER_VAD=true, WHISPER_FLASH_ATTN=true
+```
+
+all knobs are documented in `example.env`.
+
+### run
+
+```bash
+go run ./cmd/whisker
+# or: make build && ./whisker
+```
+
+on startup the manager loads the model (~10-30 s on i5-8250U) before the bot starts polling.
+
+### language selection
+
+send any whisper language code or English name as a plain text message to pin the transcription language for that chat:
+
+```
+es          → pin to Spanish
+english     → pin to English
+auto        → reset to automatic detection (default)
+```
+
+all 99 whisper language codes are accepted. the preference is stored in-memory and resets on restart.
+
+### diagnostics
+
+```bash
+WHISKER_TIMINGS=true go run ./cmd/whisker
+DETAILED_TRANSCRIPTION_LOGGING=true go run ./cmd/whisker
+WHISPER_SERVER_PORT=8181 go run ./cmd/whisker
 ```
 
 ## submodule pinning
 
-- `whisper.cpp` is pinned by commit in this repo (manual pinning)
-- no automatic branch tracking is used
-- to move to a newer engine commit, checkout the target commit inside `whisper.cpp/`, then commit the submodule pointer change in this repo
+- `whisper.cpp` is pinned by commit (manual)
+- no automatic branch tracking
+- to advance the pin: checkout the target commit inside `whisper.cpp/`, then `git add whisper.cpp && git commit`
